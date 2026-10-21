@@ -1,0 +1,8 @@
+{
+  "embedding_model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+  "chroma_dir": "../app/ai_service/chroma_db",
+  "collection_name": "helpdesk_cosine",
+  "nb_documents": 1783,
+  "similarity_threshold": 0.5,
+  "top_k": 3
+}

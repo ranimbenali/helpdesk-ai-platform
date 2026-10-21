@@ -1,0 +1,42 @@
+# ===== PYTHON =====
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# ===== SECRETS =====
+.env
+*.env
+!.env.example
+
+# ===== NODE / BUILD =====
+node_modules/
+dist/
+build/
+.vite/
+
+# ===== DATA & TRAINED ARTIFACTS (never published) =====
+data/
+*.csv
+*.sql
+*.db
+*.sqlite
+*.sqlite3
+*.pkl
+backend/static/
+backend/app/ai_service/chroma_db/
+backend/app/ai_service/models/
+backend/app/ai_service/models_candidate/
+backend/notebooks/mlruns/
+backend/notebooks/mlflow.db*
+scripts/checkpoint.json
+
+# ===== MISC =====
+*.log
+.vscode/
+.idea/
+.claude/
+.DS_Store
+Thumbs.db

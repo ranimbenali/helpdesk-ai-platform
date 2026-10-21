@@ -1,0 +1,131 @@
+version: "3.9"
+
+services:
+
+  # ── PostgreSQL ───────────────────────────────────────────────────────────────
+  db:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER:     ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB:       ${POSTGRES_DB:-helpdesk_ia}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── Elasticsearch (backend de recherche pour Kibana) ─────────────────────────
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.0
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - xpack.security.http.ssl.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    ports:
+      - "9200:9200"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -q '\"status\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+
+  # ── Kibana (visualisation des classifications IA) ────────────────────────────
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.15.0
+    restart: unless-stopped
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - XPACK_SECURITY_ENABLED=false
+    ports:
+      - "5601:5601"
+
+  # ── Serveur MLflow (registre de modèles partagé local ↔ Docker) ──────────────
+  # Réutilise l'image backend (mlflow y est déjà installé) — juste un entrypoint
+  # différent. Sert le même backend-store (mlflow.db) et les mêmes artefacts
+  # (mlruns/) via HTTP, donc plus de chemin de fichier absolu propre à un OS :
+  # le serveur (toujours Linux, dans ce conteneur) est seul à toucher le disque.
+  mlflow:
+    image: helpdesk_ia-backend
+    entrypoint: ["mlflow", "server",
+                 "--backend-store-uri", "sqlite:////app/notebooks/mlflow.db",
+                 "--serve-artifacts",
+                 "--artifacts-destination", "/app/notebooks/mlruns",
+                 "--host", "0.0.0.0", "--port", "5000",
+                 "--allowed-hosts", "localhost:*,mlflow:*"]
+    restart: unless-stopped
+    volumes:
+      - ./backend/notebooks/mlflow.db:/app/notebooks/mlflow.db
+      - ./backend/notebooks/mlruns:/app/notebooks/mlruns
+    ports:
+      - "5000:5000"
+
+  # ── Backend FastAPI ──────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: helpdesk_ia-backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_started   # non bloquant : le backend démarre même si ES est encore en train de démarrer
+      mlflow:
+        condition: service_started   # non bloquant : idem, simple best-effort pour l'ordre de démarrage
+    environment:
+      DATABASE_URL:    postgresql+psycopg2://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-helpdesk_ia}
+      GEISER_BASE_URL: ${GEISER_BASE_URL}
+      GEISER_TOKEN:    ${GEISER_TOKEN}
+      SMTP_HOST:       ${SMTP_HOST}
+      SMTP_PORT:       ${SMTP_PORT:-587}
+      SMTP_USER:       ${SMTP_USER}
+      SMTP_PASSWORD:   ${SMTP_PASSWORD}
+      SMTP_FROM:       ${SMTP_FROM}
+      GROQ_API_KEY:    ${GROQ_API_KEY}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      # Réglages agressifs : par défaut MLflow retente 7 fois avec délai exponentiel
+      # (jusqu'à plusieurs minutes) — pensé pour des jobs d'entraînement longs, pas
+      # pour un chargement de modèle en temps réel. Ici on veut échouer vite et
+      # basculer sur le .pkl en quelques secondes si le registre est indisponible.
+      MLFLOW_HTTP_REQUEST_MAX_RETRIES: "1"
+      MLFLOW_HTTP_REQUEST_TIMEOUT: "3"
+    volumes:
+      # Persister les modèles IA et la DB vectorielle ChromaDB
+      - ./backend/app/ai_service/models:/app/app/ai_service/models
+      - ./backend/app/ai_service/chroma_db:/app/app/ai_service/chroma_db
+      # Registre MLflow (suivi + versioning des modèles de classification)
+      - ./backend/notebooks/mlflow.db:/app/notebooks/mlflow.db
+      - ./backend/notebooks/mlruns:/app/notebooks/mlruns
+    expose:
+      - "8000"
+
+  # ── Frontend React + Nginx ───────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: ""   # URLs relatives → proxiées par Nginx vers backend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+
+volumes:
+  postgres_data:
+  es_data:
